@@ -1,18 +1,11 @@
 """
 This module implements message hashing using SHA-256
 for use in S/MIME secure email.
+In S/MIME, a hash is made before creating a digital signature. The sender makes a hash of the email and then signs that hash with their private key.
 
-In S/MIME, hashing is used before generating a digital
-signature. The sender computes a hash of the email
-message and then signs the hash using their private key.
+When the receiver gets the email, they make a hash of the message again and compare it with the signed hash. If the two match, the message was not changed.
 
-When the receiver gets the message, they compute the
-hash again and compare it with the decrypted signature.
-If the values match, the message integrity is verified.
-
-If the message was modified during transmission,
-the hash values will not match and the signature
-verification will fail.
+If someone changed the email while it was being sent, the hashes will not match, and the signature check will fail.
 """
 
 from hashlib import sha256
