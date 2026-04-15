@@ -1,0 +1,4 @@
+original_size_bytes,compressed_size_bytes,ciphertext_size_bytes,signature_size_bytes,encrypted_session_key_size_bytes,nonce_size_bytes,tag_size_bytes,total_package_size_bytes,expansion_ratio
+1024,17,17,256,256,16,16,561,0.5478515625
+102400,122,122,256,256,16,16,666,0.00650390625
+1048576,1040,1040,256,256,16,16,1584,0.0015106201171875

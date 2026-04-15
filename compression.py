@@ -1,27 +1,35 @@
-"""
-
-This module implements message compression and decompression.
-PGP compresses data before encryption to reduce size and improve security.
-
-Compression helps:
-1. Reduce message size
-2. Remove patterns before encryption
-"""
-
 import zlib
 
 
-def compress_message(message):
+def compress_message(message, level=9):
     """
     Compress a message using zlib.
-    """
 
-    return zlib.compress(message)
+    Parameters
+    ----------
+    message : bytes
+    level : int
+        Compression level from 0 to 9.
+
+    Returns
+    -------
+    bytes
+        Compressed message
+    """
+    return zlib.compress(message, level)
 
 
 def decompress_message(compressed_message):
     """
     Decompress a message.
-    """
 
+    Parameters
+    ----------
+    compressed_message : bytes
+
+    Returns
+    -------
+    bytes
+        Original message
+    """
     return zlib.decompress(compressed_message)
