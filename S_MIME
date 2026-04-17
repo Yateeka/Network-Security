@@ -1,5 +1,7 @@
 import os
 import datetime
+import uuid
+
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -7,10 +9,19 @@ from cryptography import x509
 from cryptography.x509 import NameOID
 
 
-# =========================
-# KEY + CERT GENERATION
-# =========================
-def generate_keys_and_cert():
+# ============================================================
+# CONFIG (Explicit crypto choices for presentation clarity)
+# ============================================================
+AES_MODE = "AES-GCM (128-bit key)"
+HASH_FUNC = "SHA-256"
+RSA_PADDING = "RSA-OAEP (MGF1 + SHA-256)"
+SIG_PADDING = "RSA-PSS (MGF1 + SHA-256)"
+
+
+# ============================================================
+# KEY + CERT GENERATION (S/MIME style with X.509)
+# ============================================================
+def generate_keys_and_cert(name="User"):
     private_key = rsa.generate_private_key(
         public_exponent=65537,
         key_size=2048
@@ -19,7 +30,7 @@ def generate_keys_and_cert():
     public_key = private_key.public_key()
 
     subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, u"Test User"),
+        x509.NameAttribute(NameOID.COMMON_NAME, name),
     ])
 
     cert = (
@@ -36,28 +47,15 @@ def generate_keys_and_cert():
     return private_key, public_key, cert
 
 
-# =========================
-# S/MIME ENCRYPT + SIGN
-# =========================
-def smime_encrypt_sign(message, sender_priv, receiver_pub):
-    print("\n===== S/MIME ENCRYPTION =====")
+# ============================================================
+# MODULE 1: SIGNATURE
+# ============================================================
+def sign_message(message, sender_private_key):
+    print("\n[Signing Phase]")
+    print(f"Hash Function: {HASH_FUNC}")
+    print(f"Signature Scheme: {SIG_PADDING}")
 
-    session_key = AESGCM.generate_key(bit_length=128)
-    aes = AESGCM(session_key)
-
-    nonce = os.urandom(12)
-    ciphertext = aes.encrypt(nonce, message, None)
-
-    enc_session_key = receiver_pub.encrypt(
-        session_key,
-        padding.OAEP(
-            mgf=padding.MGF1(hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )
-    )
-
-    signature = sender_priv.sign(
+    signature = sender_private_key.sign(
         message,
         padding.PSS(
             mgf=padding.MGF1(hashes.SHA256()),
@@ -66,21 +64,112 @@ def smime_encrypt_sign(message, sender_priv, receiver_pub):
         hashes.SHA256()
     )
 
+    return signature
+
+
+# ============================================================
+# MODULE 2: ENCRYPTION (AES)
+# ============================================================
+def encrypt_message(message):
+    print("\n[Encryption Phase - Symmetric]")
+    print(f"Encryption Algorithm: {AES_MODE}")
+
+    session_key = AESGCM.generate_key(bit_length=128)
+    aes = AESGCM(session_key)
+
+    nonce = os.urandom(12)
+    ciphertext = aes.encrypt(nonce, message, None)
+
+    return session_key, nonce, ciphertext
+
+
+# ============================================================
+# MODULE 3: KEY EXCHANGE (RSA)
+# ============================================================
+def encrypt_session_key(session_key, receiver_public_key):
+    print("\n[Key Exchange Phase - Asymmetric]")
+    print(f"RSA Padding: {RSA_PADDING}")
+
+    enc_session_key = receiver_public_key.encrypt(
+        session_key,
+        padding.OAEP(
+            mgf=padding.MGF1(hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+
+    return enc_session_key
+
+
+# ============================================================
+# MODULE 4: VERIFY SIGNATURE
+# ============================================================
+def verify_signature(message, signature, sender_public_key):
+    print("\n[Verification Phase]")
+
+    sender_public_key.verify(
+        signature,
+        message,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        hashes.SHA256()
+    )
+
+    print("Signature VALID")
+
+
+# ============================================================
+# FULL WORKFLOW: SIGN → ENCRYPT → SEND
+# ============================================================
+def smime_send(message, sender_priv, receiver_pub):
+    print("\n==============================")
+    print(" S/MIME SEND WORKFLOW")
+    print(" Sign → Encrypt → Send")
+    print("==============================")
+
+    # Unique message ID (used for replay attack demo)
+    message_id = str(uuid.uuid4()).encode()
+
+    # Attach metadata
+    full_message = message_id + b"||" + message
+
+    signature = sign_message(full_message, sender_priv)
+
+    session_key, nonce, ciphertext = encrypt_message(full_message)
+
+    enc_session_key = encrypt_session_key(session_key, receiver_pub)
+
+    print("\n[Send Package]")
+    print("Message ID:", message_id.decode())
     print("Ciphertext size:", len(ciphertext))
     print("Encrypted session key size:", len(enc_session_key))
     print("Signature size:", len(signature))
 
-    return ciphertext, nonce, enc_session_key, signature
+    return {
+        "ciphertext": ciphertext,
+        "nonce": nonce,
+        "enc_session_key": enc_session_key,
+        "signature": signature,
+        "message_id": message_id
+    }
 
 
-# =========================
-# S/MIME DECRYPT + VERIFY
-# =========================
-def smime_decrypt_verify(ciphertext, nonce, enc_session_key, signature,
-                         receiver_priv, sender_pub):
+# ============================================================
+# FULL WORKFLOW: DECRYPT → VERIFY
+# ============================================================
+def smime_receive(package, receiver_priv, sender_pub, seen_ids):
+    print("\n==============================")
+    print(" S/MIME RECEIVE WORKFLOW")
+    print(" Decrypt → Verify")
+    print("==============================")
+
     try:
+        # Decrypt session key
         session_key = receiver_priv.decrypt(
-            enc_session_key,
+            package["enc_session_key"],
             padding.OAEP(
                 mgf=padding.MGF1(hashes.SHA256()),
                 algorithm=hashes.SHA256(),
@@ -88,45 +177,64 @@ def smime_decrypt_verify(ciphertext, nonce, enc_session_key, signature,
             )
         )
 
+        # Decrypt message
         aes = AESGCM(session_key)
-        message = aes.decrypt(nonce, ciphertext, None)
-
-        sender_pub.verify(
-            signature,
-            message,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
+        full_message = aes.decrypt(
+            package["nonce"],
+            package["ciphertext"],
+            None
         )
 
-        print("Recovered message:", message)
-        print("Signature valid: TRUE")
+        # Extract ID + message
+        message_id, message = full_message.split(b"||", 1)
+
+        print("Recovered Message:", message)
+        print("Message ID:", message_id.decode())
+
+        # Replay attack detection
+        if message_id in seen_ids:
+            print("WARNING: Replay attack detected!")
+        else:
+            seen_ids.add(message_id)
+
+        # Verify signature
+        verify_signature(full_message, package["signature"], sender_pub)
+
         return True
 
     except Exception:
-        print("Tampering detected or verification failed")
+        print("ERROR: Tampering or verification failure detected")
         return False
 
 
-# =========================
+# ============================================================
 # DEMO
-# =========================
+# ============================================================
 if __name__ == "__main__":
 
-    sender_priv, sender_pub, _ = generate_keys_and_cert()
-    receiver_priv, receiver_pub, _ = generate_keys_and_cert()
+    sender_priv, sender_pub, _ = generate_keys_and_cert("Sender")
+    receiver_priv, receiver_pub, _ = generate_keys_and_cert("Receiver")
+
+    wrong_priv, wrong_pub, _ = generate_keys_and_cert("Attacker")
+
+    seen_ids = set()
 
     message = b"Secure S/MIME test message"
 
     print("\n=== NORMAL FLOW ===")
-    c, n, k, s = smime_encrypt_sign(message, sender_priv, receiver_pub)
+    package = smime_send(message, sender_priv, receiver_pub)
+    smime_receive(package, receiver_priv, sender_pub, seen_ids)
 
-    smime_decrypt_verify(c, n, k, s, receiver_priv, sender_pub)
+    print("\n=== TAMPERING ATTACK ===")
+    tampered_package = package.copy()
+    tampered_cipher = bytearray(package["ciphertext"])
+    tampered_cipher[0] ^= 1
+    tampered_package["ciphertext"] = bytes(tampered_cipher)
 
-    print("\n=== TAMPERED FLOW ===")
-    tampered = bytearray(c)
-    tampered[0] ^= 1
+    smime_receive(tampered_package, receiver_priv, sender_pub, seen_ids)
 
-    smime_decrypt_verify(bytes(tampered), n, k, s, receiver_priv, sender_pub)
+    print("\n=== WRONG KEY (SIGNATURE FAIL) ===")
+    smime_receive(package, receiver_priv, wrong_pub, seen_ids)
+
+    print("\n=== REPLAY ATTACK ===")
+    smime_receive(package, receiver_priv, sender_pub, seen_ids)
